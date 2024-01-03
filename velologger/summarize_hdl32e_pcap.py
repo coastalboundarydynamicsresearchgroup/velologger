@@ -5,12 +5,11 @@ from typing import Optional, Union
 import matplotlib.pyplot as plt
 import numpy as np
 from fire import Fire
+from hdl32e.read_hdl32e_pcap_pointcloud import read_hdl32e_pcap_pointcloud
 from matplotlib.ticker import ScalarFormatter
 from pytars.readers.maptiles.get_map_tiles import get_map_data_from_lat_lon
 from pytars.readers.pcap.pcap_filters import PcapPacketFilters
 from scipy.stats import binned_statistic_2d
-
-from hdl32e.read_hdl32e_pcap_pointcloud import read_hdl32e_pcap_pointcloud
 
 
 def summarize_hdl32e_pcap(
@@ -18,7 +17,7 @@ def summarize_hdl32e_pcap(
     zoom_level: int = 18,
     source_ip_addr: Optional[str] = None,
     min_relative_time: float = 0.0,
-    max_relative_time: float = 10.0,
+    max_relative_time: float = np.inf,
 ):
     """Summarize the HDL32e pcap file.
     Args:
@@ -125,9 +124,7 @@ def plot_pointcloud_spherical(pc):
     ]
     cmap_list = ["viridis_r", "jet", "gnuplot", "gnuplot", "gnuplot"]
     vrange_list = [[0, 10], [0, 100], delta_range, delta_range, delta_range]
-    for ax, data, title, vrange, cmap in zip(
-        axs, plot_data, plot_titles, vrange_list, cmap_list
-    ):
+    for ax, data, title, vrange, cmap in zip(axs, plot_data, plot_titles, vrange_list, cmap_list):
         im = ax.pcolormesh(
             azimuth_vector_degrees,
             elevation_vector_degrees,
