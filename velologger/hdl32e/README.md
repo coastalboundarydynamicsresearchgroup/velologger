@@ -1,5 +1,5 @@
 # Velodyne HDL32e Operation
-The Velodyne HDL32e is a 32 channel spinning lidar scanner operating at 903nm (or 905nm, depending on which manual you read). 
+The Velodyne HDL32e is a 32 channel spinning lidar scanner operating at ~903 nm (Manual also references it as 905 nm). 
 
 ## Connecting to the sensor
 The sensor communicates over ethernet, which is easily debugged using the software "Wireshark".
@@ -8,7 +8,7 @@ Plug the sensor into the computer, and open wireshark. Double click on the conne
 
 Once connected, you should see frequent UDP traffic coming from a fixed IP: eg. 192.168.1.201. This is the IP of the scanner.  In order to communicate with the scanner, your computer must be on 192.168.1.xxx.  Where xxx is a value other than the scanner. eg. 10
 
-*If the scanner is set to have a destination IP address, you must set your computer to that exact value. eg. 1
+*If the scanner is set to have a destination IP address, you must set your computer to that exact value. eg. 192.168.1.1.  You can see this by inspecting the wireshark packet and looking for the destination ip address.
 
 Once your computer ip is correct, you can go to the browser and type the scanner IP address, and you'll see all the settings.
 
@@ -33,7 +33,7 @@ PCAP_FILTERS = PcapPacketFilters(
 
 PCAP_FILE = "foo.pcap"
 
-with PcapReader(PCAP_FILE, packet_filters=pcap_filters) as pcap:
+with PcapReader(PCAP_FILE, packet_filters=PCAP_FILTERS) as pcap:
     for packet in pcap:
         udp_data_bytes = packet.udp_data.data
         # do something
@@ -89,7 +89,7 @@ If there is no GPS data, the UTC time is nan and the timestamp is UTC, so it rev
 In order to avoid crosstalk between laser firings, each firing is staggered in time. Rather than sending that same timestamp offset with every packet (and therefore growing the udp packet size), the equation for the timestamp of each firing in the 12 blocks is given and can be infered easily. See manual page 24.
 
 ## Raw Data -> Cartesian
-Now that we have the time, motor azimuth, and laser_id (eg. which transceiver the return was from infered from the packet structure) - we need to convert to cartesian coordinates.  The azimuth and elevation angle of each laser is calibrated at the factory.  These values define the actual azimuth-elevation angles and how they differ from the design values due to lens distortion and manufacturing tolerances. In lieu of these calibration values, the default values can be used - though the data won't be as accurate.
+Now that we have the time, motor azimuth, and laser_id (eg. which transceiver the return was from infered from the packet structure) - we need to convert to cartesian coordinates.  The azimuth and elevation angle of each laser is calibrated at the factory to be at "design values".  Some manufacturers provide deviations from the design values, but it appears the HDL32e does not. If doing precise analysis, you may need to try to do an intrinsic calibration of each laser... this it not a trivial task.
 
 #### Elevation angle per point
 This value is read from the calibration file and is constant for each laser_id
