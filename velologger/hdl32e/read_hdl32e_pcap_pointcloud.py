@@ -11,8 +11,10 @@ from pytars.readers.pcap.pcap_reader import PcapReader
 from pytars.sensors.lidar.pointcloud import LidarPointCloud
 from pytars.transforms.cart2sph_coordinate_system import CoordinateSystem
 from pytars.transforms.coordinates import Coordinates
+from pytars.transforms.transform import create_rotation_matrix_4x4
 from pytars.utils.timing import datetime64_to_timestamp_seconds, mean_datetime64
 
+from .calc_roll_pitch import calc_roll_pitch
 from .hdl32e_data_structure import DataPacketConstants, dtype_data_packet
 from .read_hdl32e_calibration import Hdl32CalibrationConstants, read_hdl32e_calibration
 from .read_hdl32e_pcap_telemetry import Hdl32eTelemetryData, read_hdl32e_pcap_telemetry
@@ -186,13 +188,9 @@ def calc_azimuth_elevation_deg_time_usec(
         motor_speed_deg_per_usec[11::6] = motor_speed_deg_per_usec[10::6]
 
     # calculate azimuth angle
-    relative_azimuth_degrees = (
-        relative_time_offset_microseconds * motor_speed_deg_per_usec
-    )
+    relative_azimuth_degrees = relative_time_offset_microseconds * motor_speed_deg_per_usec
     azimuth_degrees = (
-        motor_azimuth_deg
-        + relative_azimuth_degrees
-        + calibration.azimuth_offset_deg[laser_id]
+        motor_azimuth_deg + relative_azimuth_degrees + calibration.azimuth_offset_deg[laser_id]
     ) % 360
     elevation_degrees = calibration.elevation_offset_deg[laser_id]
     return azimuth_degrees, elevation_degrees, packet_time_offset_microseconds
@@ -243,9 +241,7 @@ def read_raw_hdl32e_pcap_data(pcap_file, pcap_filters: PcapPacketFilters):
         np.vstack([x["firing_data"]["laser_measurements"]["distance"] for x in data])
         * DataPacketConstants.DISTANCE_SCALAR.value
     ).T
-    intensity = np.vstack(
-        [x["firing_data"]["laser_measurements"]["intensity"] for x in data]
-    ).T
+    intensity = np.vstack([x["firing_data"]["laser_measurements"]["intensity"] for x in data]).T
 
     gps_timestamp_microseconds = np.hstack([x["gps_timestamp"] for x in data])
 
@@ -301,9 +297,7 @@ def correct_lidar_time(
     logging.debug(f"  max telemetry datetime: {metadata_datetime[-1]}")
 
     # ensure data coverage doesn't span more than an hour
-    time_coverage = (metadata_datetime[0] - metadata_datetime[-1]).astype(
-        "timedelta64[h]"
-    )
+    time_coverage = (metadata_datetime[0] - metadata_datetime[-1]).astype("timedelta64[h]")
     if time_coverage > 1:
         logging.error(
             "Can't convert time to datetime: time conversion assumes less than 1 hour of data"
@@ -312,20 +306,18 @@ def correct_lidar_time(
 
     # round to low, mid, high hour and add lidar time from top of hour
     mean_datetime = mean_datetime64(metadata_datetime)
-    low_estimate_datetime = (mean_datetime.astype("datetime64[h]") - 1).astype(
-        "datetime64[us]"
-    ) + (lidar_time_seconds * 1e6).astype("timedelta64[us]")
+    low_estimate_datetime = (mean_datetime.astype("datetime64[h]") - 1).astype("datetime64[us]") + (
+        lidar_time_seconds * 1e6
+    ).astype("timedelta64[us]")
 
-    mid_estimate_datetime = mean_datetime.astype("datetime64[h]").astype(
-        "datetime64[us]"
-    ) + (lidar_time_seconds * 1e6).astype("timedelta64[us]")
+    mid_estimate_datetime = mean_datetime.astype("datetime64[h]").astype("datetime64[us]") + (
+        lidar_time_seconds * 1e6
+    ).astype("timedelta64[us]")
     high_estimate_datetime = (mean_datetime.astype("datetime64[h]") + 1).astype(
         "datetime64[us]"
     ) + (lidar_time_seconds * 1e6).astype("timedelta64[us]")
     # calculate the difference between the time estimates and the mean_datetime
-    all_estimates = np.stack(
-        [low_estimate_datetime, mid_estimate_datetime, high_estimate_datetime]
-    )
+    all_estimates = np.stack([low_estimate_datetime, mid_estimate_datetime, high_estimate_datetime])
     all_estimate_diff = np.abs(all_estimates - mean_datetime)
 
     # determine which estimate is closest to the median
@@ -340,28 +332,26 @@ def correct_lidar_time(
 
 
 def read_hdl32e_pcap_pointcloud(
-    pcap_file,
-    pcap_filters: PcapPacketFilters,
+    pcap_file: Union[str, Path],
+    pcap_filters: Optional[PcapPacketFilters] = None,
     calibration_file: Optional[Union[Path, str]] = None,
     extrinsic_4x4_to_transformed_from_sensor: Optional[np.ndarray] = None,
     include_null_returns: bool = False,
     include_per_packet_per_block_data: bool = True,
-    include_telemetry: bool = True,
     name: str = "",
 ):
+    if pcap_filters is None:
+        pcap_filters = PcapPacketFilters()
+
     raw_data = read_raw_hdl32e_pcap_data(pcap_file, pcap_filters)
-    if include_telemetry:
-        raw_telemetry = read_hdl32e_pcap_telemetry(pcap_file, pcap_filters)
-    else:
-        raw_telemetry = None
+    raw_telemetry = read_hdl32e_pcap_telemetry(pcap_file, pcap_filters)
 
     # read calibration
     calibration = read_hdl32e_calibration(calibration_file)
 
     # infer if dual return based on first packet
     is_dual_return_per_point = np.all(
-        raw_data.motor_azimuth_per_block_deg[0:12:2]
-        == raw_data.motor_azimuth_per_block_deg[1:12:2]
+        raw_data.motor_azimuth_per_block_deg[0:12:2] == raw_data.motor_azimuth_per_block_deg[1:12:2]
     )
 
     # calculate return_num and num_returns
@@ -369,9 +359,7 @@ def read_hdl32e_pcap_pointcloud(
         return_num_per_point,
         num_returns_per_point,
         is_unique_return_per_point,
-    ) = calc_return_num_and_num_returns(
-        raw_data.range_meters_per_point, is_dual_return_per_point
-    )
+    ) = calc_return_num_and_num_returns(raw_data.range_meters_per_point, is_dual_return_per_point)
 
     # calculate null returns
     is_null_return_per_point = raw_data.range_meters_per_point == 0
@@ -406,14 +394,10 @@ def read_hdl32e_pcap_pointcloud(
     motor_direction = np.median(np.diff(raw_data.motor_azimuth_per_block_deg[::2]))
     frame_num_per_packet = np.zeros(num_blocks)
     if motor_direction > 0:
-        frame_num_per_packet[1:] = np.cumsum(
-            np.diff(raw_data.motor_azimuth_per_block_deg) < 0
-        )
+        frame_num_per_packet[1:] = np.cumsum(np.diff(raw_data.motor_azimuth_per_block_deg) < 0)
         logging.debug("Motor direction is positive")
     else:
-        frame_num_per_packet[1:] = np.cumsum(
-            np.diff(raw_data.motor_azimuth_per_block_deg) > 0
-        )
+        frame_num_per_packet[1:] = np.cumsum(np.diff(raw_data.motor_azimuth_per_block_deg) > 0)
         logging.debug("Motor direction is negative")
     frame_num_per_point = np.tile(frame_num_per_packet, (32, 1))
 
@@ -440,11 +424,22 @@ def read_hdl32e_pcap_pointcloud(
 
     # apply extrinsic rotation
     if extrinsic_4x4_to_transformed_from_sensor is None:
-        transformed_frame = None
-    else:
-        transformed_frame = sensor_frame.transformed(
-            extrinsic_4x4_to_transformed_from_sensor
+        # estimate roll and pitch
+        roll_deg, pitch_deg = calc_roll_pitch(
+            np.mean(raw_telemetry.mean_accel_x),
+            np.mean(raw_telemetry.mean_accel_y),
+            np.mean(raw_telemetry.mean_accel_z),
         )
+        print(f"roll: {roll_deg:.2f} pitch: {pitch_deg:.2f}")
+        print(extrinsic_4x4_to_transformed_from_sensor)
+
+        extrinsic_4x4_to_transformed_from_sensor = create_rotation_matrix_4x4(
+            0, 0, 0, pitch_deg, -roll_deg, 90
+        )
+        print(extrinsic_4x4_to_transformed_from_sensor)
+        transformed_frame = sensor_frame.transformed(extrinsic_4x4_to_transformed_from_sensor)
+    else:
+        transformed_frame = sensor_frame.transformed(extrinsic_4x4_to_transformed_from_sensor)
 
     if include_per_packet_per_block_data:
         # create per block class
@@ -490,10 +485,7 @@ def read_hdl32e_pcap_pointcloud(
 
     # remove null if requested
     if not include_null_returns:
-        pc = pc[
-            ~is_null_return_per_point.T.flatten()
-            & is_unique_return_per_point.T.flatten()
-        ]
+        pc = pc[~is_null_return_per_point.T.flatten() & is_unique_return_per_point.T.flatten()]
     else:
         pc = pc[is_unique_return_per_point.T.flatten()]
 
@@ -524,9 +516,7 @@ if __name__ == "__main__":
     time_to_read = time.time() - start_time
 
     print(f"Number of points: {len(pc)}")
-    dt_seconds = (pc.datetime[-1] - pc.datetime[0]).astype("timedelta64[us]").astype(
-        float
-    ) / 1e6
+    dt_seconds = (pc.datetime[-1] - pc.datetime[0]).astype("timedelta64[us]").astype(float) / 1e6
     print(f"Duration read (seconds): {dt_seconds}")
     print(f"Percent of sensor time to read: {time_to_read/(dt_seconds) * 100:.1f}%")
 
@@ -589,9 +579,7 @@ if __name__ == "__main__":
         )
     else:
         timestamps_from_gps = np.array([0]) * np.nan
-    timestamps_from_pcap = datetime64_to_timestamp_seconds(
-        pc.per_packet_data.pcap_packet_datetime
-    )
+    timestamps_from_pcap = datetime64_to_timestamp_seconds(pc.per_packet_data.pcap_packet_datetime)
     print(
         f"{'pcap time from packet':<30}:"
         + f"{pc.per_packet_data.pcap_packet_datetime[0]}"
