@@ -7,21 +7,23 @@ from pytars.utils.gridding import bin_grid_1d, bin_grid_2d
 
 # constants to read the pcap file
 PCAP_FILE = r"/Users/rslocum/Downloads/lidar_20240104_232931.pcap"
-PCAP_FILTERS = PcapPacketFilters(relative_time_gate_seconds=(0, 10))  #
+PCAP_FILTERS = PcapPacketFilters(relative_time_gate_seconds=(0, 10))
+# ^ setting values here can make it faster to debug if you only want to load a subset of the data
 
-# Visuals
+# Visual constants
 DX = 0.25
 DZ_CMAP_SCALE = 0.5
 FRAME_NUM = 3
 
+# read point cloud
 pc = read_hdl32e_pcap_pointcloud(
     pcap_file=PCAP_FILE,
-    pcap_filters=PCAP_FILTERS,
+    pcap_filters=PCAP_FILTERS,  # This is optional, it can reduce the amount of data loaded
     name="sample collect",
 )
 
 
-# compute mean z_grid
+# compute min z_grid
 xi = np.arange(-50, 40, 0.5)
 yi = np.arange(-10, 20, 0.5)
 zg_mean = bin_grid_2d(
