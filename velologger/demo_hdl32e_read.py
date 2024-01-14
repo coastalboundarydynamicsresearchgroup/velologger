@@ -19,7 +19,7 @@ extrinsic_4x4_to_transformed_from_sensor = create_rotation_matrix_4x4(0, 0, 0, P
 pc = read_hdl32e_pcap_pointcloud(
     pcap_file=PCAP_FILE,
     pcap_filters=PCAP_FILTERS,
-    extrinsic_4x4_to_transformed_from_sensor=extrinsic_4x4_to_transformed_from_sensor,
+    extrinsic_4x4_to_transformed_from_sensor=None,
     include_null_returns=False,
     name="data collect 01",
 )

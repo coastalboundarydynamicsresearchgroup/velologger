@@ -42,12 +42,10 @@ class Hdl32eTelemetryData:
     @property
     def datetime(self):
         # assume microseconds is more accurate than gprmc
-        datetime_truncated_hour = self.gprmc.datetime_utc.astype(
-            "datetime64[h]"
-        ).astype("datetime64[us]")
-        return datetime_truncated_hour + self.gps_microseconds_from_hour.astype(
-            "timedelta64[us]"
+        datetime_truncated_hour = self.gprmc.datetime_utc.astype("datetime64[h]").astype(
+            "datetime64[us]"
         )
+        return datetime_truncated_hour + self.gps_microseconds_from_hour.astype("timedelta64[us]")
 
     @property
     def mean_accel_x(self):
@@ -86,16 +84,13 @@ class Hdl32eTelemetryData:
         return self.raw_gyro_temp_accel[2].gyro_deg_per_sec
 
 
-def read_hdl32e_pcap_telemetry(
-    pcap_file, pcap_filters: PcapPacketFilters
-) -> Hdl32eTelemetryData:
+def read_hdl32e_pcap_telemetry(pcap_file, pcap_filters: PcapPacketFilters) -> Hdl32eTelemetryData:
     # unless the user specifically requests a different destination port, use the default
     pcap_filters = pcap_filters.copy()
     if pcap_filters.destination_port is None:
         pcap_filters.destination_port = 8308
     pcap_filters.udp_payload_length_gate = [512, 512]
 
-    # read all the packets
     with PcapReader(pcap_file, packet_filters=pcap_filters) as pcap:
         logging.debug(f"Reading HDL32e Telemetry Packets: {str(pcap_file)}")
         all_udp_data = []
@@ -121,16 +116,13 @@ def read_hdl32e_pcap_telemetry(
     all_gyro_temp_accel = []
     for i in range(3):
         i_gyro = (
-            uint12_to_int12(
-                np.array([x["gyro_temp_accel"][i]["gyro"] for x in data]) & 0x0FFF
-            )
+            uint12_to_int12(np.array([x["gyro_temp_accel"][i]["gyro"] for x in data]) & 0x0FFF)
             * TelemetryPacketConstants.GYRO_SCALE_FACTOR.value
         )
         i_temp = (
             (
                 uint12_to_int12(
-                    np.array([x["gyro_temp_accel"][i]["temperature"] for x in data])
-                    & 0x0FFF
+                    np.array([x["gyro_temp_accel"][i]["temperature"] for x in data]) & 0x0FFF
                 )
             )
             * TelemetryPacketConstants.TEMP_SCALE_FACTOR.value
@@ -138,21 +130,17 @@ def read_hdl32e_pcap_telemetry(
         )
         i_accel_x = (
             uint12_to_int12(
-                np.array([x["gyro_temp_accel"][i]["acceleration_x"] for x in data])
-                & 0x0FFF
+                np.array([x["gyro_temp_accel"][i]["acceleration_x"] for x in data]) & 0x0FFF
             )
         ) * TelemetryPacketConstants.ACCEL_SCALE_FACTOR.value
         i_accel_y = (
             uint12_to_int12(
-                np.array([x["gyro_temp_accel"][i]["acceleration_y"] for x in data])
-                & 0x0FFF
+                np.array([x["gyro_temp_accel"][i]["acceleration_y"] for x in data]) & 0x0FFF
             )
         ) * TelemetryPacketConstants.ACCEL_SCALE_FACTOR.value
         all_gyro_temp_accel.append(GyroTempAccel(i_gyro, i_temp, i_accel_x, i_accel_y))
     all_gprmc = GPRMCArray([array_to_str(x["nmea_sentence"]) for x in data])
-    all_gps_gps_microseconds_from_hour = np.array(
-        [x["gps_microseconds_from_hour"] for x in data]
-    )
+    all_gps_gps_microseconds_from_hour = np.array([x["gps_microseconds_from_hour"] for x in data])
     return Hdl32eTelemetryData(
         raw_gyro_temp_accel=all_gyro_temp_accel,
         gps_microseconds_from_hour=all_gps_gps_microseconds_from_hour,

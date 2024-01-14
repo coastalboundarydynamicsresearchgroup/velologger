@@ -1,25 +1,31 @@
 # %%
 import matplotlib.pyplot as plt
 import numpy as np
-from hdl32e.read_hdl32e_pcap_pointcloud import read_hdl32e_pcap_pointcloud
 from pytars.readers.pcap.pcap_filters import PcapPacketFilters
 from pytars.utils.gridding import bin_grid_1d, bin_grid_2d
+from pytars.utils.timing import mean_datetime64
+
+from velologger.hdl32e.read_hdl32e_pcap_pointcloud import read_hdl32e_pcap_simple
 
 # constants to read the pcap file
-PCAP_FILE = r"/Users/rslocum/Downloads/lidar_20240104_232931.pcap"
-PCAP_FILTERS = PcapPacketFilters(relative_time_gate_seconds=(0, 10))  #
+PCAP_FILE = [
+    r"/Users/rslocum/Downloads/A.pcap",
+    r"/Users/rslocum/Downloads/B.pcap",
+    r"/Users/rslocum/Downloads/C.pcap",
+    r"/Users/rslocum/Downloads/D.pcap",
+]
+PCAP_FILTERS = PcapPacketFilters(relative_time_gate_seconds=(0, 50))  #
 
 # Visuals
 DX = 0.25
 DZ_CMAP_SCALE = 0.5
 FRAME_NUM = 3
 
-pc = read_hdl32e_pcap_pointcloud(
+pc = read_hdl32e_pcap_simple(
     pcap_file=PCAP_FILE,
     pcap_filters=PCAP_FILTERS,
     name="sample collect",
 )
-
 
 # compute mean z_grid
 xi = np.arange(-50, 40, 0.5)
@@ -72,10 +78,14 @@ for ax in axs:
     ax.label_outer()
 
 # %
-pc_laser_id = pc[pc.laser_id == 14]
+pc_laser_id = pc[(pc.laser_id == 14) & (pc.frame_num > 0)]
 
 xi = np.arange(-50, 0, 0.25)
-frame_nums = np.arange(0, np.max(pc_laser_id.frame_num) + 1)
+frame_nums = np.arange(1, np.max(pc_laser_id.frame_num) + 1)
+frame_nums_time = [
+    mean_datetime64(pc_laser_id.datetime64[pc_laser_id.frame_num == frame_num])
+    for frame_num in frame_nums
+]
 
 
 def low_fun(x):
@@ -94,7 +104,7 @@ z_grid_transect = bin_grid_2d(
     pc_laser_id.frame_num,
     pc_laser_id.transformed_frame.z_meters,
     xi,
-    np.arange(0, np.max(pc_laser_id.frame_num) + 1),
+    frame_nums,
     "mean",
 )
 
@@ -102,13 +112,14 @@ height_above_min = z_grid_transect - mean_transect_z
 
 fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 im = ax.pcolormesh(
-    frame_nums,
+    frame_nums_time,
     xi,
     height_above_min.T,
     vmin=0,
     vmax=DZ_CMAP_SCALE,
 )
-ax.set_xlabel("Frame Number")
+ax.set_xlabel("Time (UTC)")
 ax.set_ylabel("X (m)")
 ax.set_title("Height Above Minimum (m)")
+ax.invert_yaxis()
 fig.colorbar(im, ax=ax, label="Height Above Minimum Transect(m)")

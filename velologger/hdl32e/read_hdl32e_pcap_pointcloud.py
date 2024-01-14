@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from pytars.readers.pcap.pcap_filters import PcapPacketFilters
@@ -11,13 +11,151 @@ from pytars.readers.pcap.pcap_reader import PcapReader
 from pytars.sensors.lidar.pointcloud import LidarPointCloud
 from pytars.transforms.cart2sph_coordinate_system import CoordinateSystem
 from pytars.transforms.coordinates import Coordinates
-from pytars.transforms.transform import create_rotation_matrix_4x4
 from pytars.utils.timing import datetime64_to_timestamp_seconds, mean_datetime64
 
-from .calc_roll_pitch import calc_roll_pitch
-from .hdl32e_data_structure import DataPacketConstants, dtype_data_packet
-from .read_hdl32e_calibration import Hdl32CalibrationConstants, read_hdl32e_calibration
-from .read_hdl32e_pcap_telemetry import Hdl32eTelemetryData, read_hdl32e_pcap_telemetry
+from velologger.hdl32e.calc_roll_pitch import get_hdl32e_extrinsic_4x4
+from velologger.hdl32e.hdl32e_data_structure import (
+    DataPacketConstants,
+    dtype_data_packet,
+)
+from velologger.hdl32e.read_hdl32e_calibration import (
+    Hdl32CalibrationConstants,
+    read_hdl32e_calibration,
+)
+from velologger.hdl32e.read_hdl32e_pcap_telemetry import (
+    Hdl32eTelemetryData,
+    read_hdl32e_pcap_telemetry,
+)
+
+
+@dataclass
+class Hdl32eSimple:
+    """A simple class to hold the data from a HDL32e data collect."""
+
+    sensor_frame: Coordinates
+    transformed_frame: Coordinates
+    laser_id: np.ndarray
+    datetime64: np.ndarray
+    reflectivity: np.ndarray
+    frame_num: np.ndarray
+    return_num: np.ndarray
+    num_returns: np.ndarray
+    pcap_file_names: List[Path]
+    pcap_file_ind: np.ndarray
+    name: str
+
+    def save_xyz_reflectivity_csv(self, file_name: Union[Path, str]):
+        """Save the xyz and reflectivity to a csv file."""
+        xyz = self.transformed_frame.xyz_meters
+        reflectivity = self.reflectivity
+        np.savetxt(file_name, np.hstack([xyz, reflectivity[:, None]]), delimiter=",")
+
+    def __getitem__(self, key) -> "Hdl32eSimple":
+        return Hdl32eSimple(
+            sensor_frame=self.sensor_frame[key],
+            transformed_frame=self.transformed_frame[key],
+            laser_id=self.laser_id[key],
+            datetime64=self.datetime64[key],
+            reflectivity=self.reflectivity[key],
+            frame_num=self.frame_num[key],
+            return_num=self.return_num[key],
+            num_returns=self.num_returns[key],
+            pcap_file_names=self.pcap_file_names,
+            pcap_file_ind=self.pcap_file_ind[key],
+            name=self.name,
+        )
+
+
+def read_hdl32e_pcap_simple(
+    pcap_file: Union[Union[str, Path], List[Union[str, Path]]],
+    pcap_filters: Optional[PcapPacketFilters] = None,
+    extrinsic_4x4_to_transformed_from_sensor: Optional[np.ndarray] = None,
+    include_null_returns: bool = False,
+    name: str = "",
+):
+    # make a single file into a list to simplify code below
+    if isinstance(pcap_file, (str, Path)):
+        pcap_file = [pcap_file]
+
+    # read all the data
+    # preallocate
+    # 3 x M size
+    all_sensor_xyz = np.zeros((0, 3))
+    all_sensor_sph = np.zeros((0, 3))
+    all_laser_id = np.zeros((0,))
+    all_datetime64 = np.zeros((0,), dtype=np.datetime64)
+    all_reflectivity = np.zeros((0,))
+    all_return_num = np.zeros((0,))
+    all_num_returns = np.zeros((0,))
+    all_pcap_file_names = []
+    all_pcap_file_ind = np.zeros((0,))
+    all_accel_xyz = np.zeros((0, 3))
+
+    for pcap_file_ind, pcap_file_name in enumerate(pcap_file):
+        pc = read_hdl32e_pcap_pointcloud(
+            pcap_file=pcap_file_name,
+            pcap_filters=pcap_filters,
+            extrinsic_4x4_to_transformed_from_sensor=extrinsic_4x4_to_transformed_from_sensor,
+            include_null_returns=include_null_returns,
+            name=name,
+        )
+        all_sensor_xyz = np.vstack([all_sensor_xyz, pc.sensor_frame.xyz_meters])
+        all_sensor_sph = np.vstack([all_sensor_sph, pc.sensor_frame.az_el_deg_range_meters])
+        all_laser_id = np.hstack([all_laser_id, pc.laser_id])
+        all_datetime64 = np.hstack([all_datetime64, pc.datetime])
+        all_reflectivity = np.hstack([all_reflectivity, pc.reflectivity])
+        all_return_num = np.hstack([all_return_num, pc.return_num])
+        all_num_returns = np.hstack([all_num_returns, pc.num_returns])
+        all_pcap_file_names.extend([pcap_file_name] * len(pc))
+        all_pcap_file_ind = np.hstack([all_pcap_file_ind, np.ones(len(pc)) * pcap_file_ind])
+        accel_xyz = np.vstack(
+            [pc.telemetry.mean_accel_x, pc.telemetry.mean_accel_y, pc.telemetry.mean_accel_z]
+        )
+        all_accel_xyz = np.vstack([all_accel_xyz, accel_xyz.T])
+
+    # determine which extrinsic to use
+    if extrinsic_4x4_to_transformed_from_sensor is None:
+        # estimate roll and pitch
+        mean_accel_x = np.mean(all_accel_xyz[:, 0])
+        mean_accel_y = np.mean(all_accel_xyz[:, 1])
+        mean_accel_z = np.mean(all_accel_xyz[:, 2])
+
+        extrinsic_4x4_to_transformed_from_sensor = get_hdl32e_extrinsic_4x4(
+            mean_accel_x,
+            mean_accel_y,
+            mean_accel_z,
+        )
+
+    # create coordinates class
+    coordinate_system = pc.sensor_frame.coordinate_system
+    sensor_frame = Coordinates(
+        coordinate_system=coordinate_system,
+        xyz_meters=all_sensor_xyz,
+        az_el_deg_range_meters=all_sensor_sph,
+    )
+    transformed_frame = sensor_frame.transformed(extrinsic_4x4_to_transformed_from_sensor)
+
+    # recalculate frame num
+    motor_direction = np.median(np.diff(all_sensor_sph[::32, 0]))
+    frame_num = np.zeros_like(all_laser_id)
+    if motor_direction > 0:
+        frame_num[1:] = np.cumsum(np.diff(all_sensor_sph[:, 0]) < -5)
+    else:
+        frame_num[1:] = np.cumsum(np.diff(all_sensor_sph[:, 0]) > 5)
+
+    return Hdl32eSimple(
+        sensor_frame=sensor_frame,
+        transformed_frame=transformed_frame,
+        laser_id=all_laser_id,
+        datetime64=all_datetime64,
+        reflectivity=all_reflectivity,
+        frame_num=frame_num,
+        return_num=all_return_num,
+        num_returns=all_num_returns,
+        pcap_file_names=all_pcap_file_names,
+        pcap_file_ind=all_pcap_file_ind,
+        name=name,
+    )
 
 
 @dataclass
@@ -88,7 +226,7 @@ class Hdl32ePointcloud(LidarPointCloud):
             laser_id=base_item.laser_id,
             frame_num=base_item.frame_num,
             datetime=base_item.datetime,
-            lidar_type=base_item.lidar_type,
+            lidar_model=base_item.lidar_model,
             name=base_item.name,
             packet_num=packet_num,
             block_num=block_num,
@@ -196,7 +334,7 @@ def calc_azimuth_elevation_deg_time_usec(
     return azimuth_degrees, elevation_degrees, packet_time_offset_microseconds
 
 
-def read_raw_hdl32e_pcap_data(pcap_file, pcap_filters: PcapPacketFilters):
+def read_raw_hdl32e_pcap_data(pcap_file: Union[str, Path], pcap_filters: PcapPacketFilters):
     """Reads the raw data from a pcap file.
 
     - Includes all data from the udp packet.
@@ -210,7 +348,7 @@ def read_raw_hdl32e_pcap_data(pcap_file, pcap_filters: PcapPacketFilters):
 
     # read all the packets
     with PcapReader(pcap_file, packet_filters=pcap_filters) as pcap:
-        logging.debug(f"Reading HDL32e Pointcloud Packets: {str(pcap_file)}")
+        logging.debug(f"Reading HDL32e Pointcloud Packets: {pcap_file}")
         all_udp_data = []
         all_packet_headers = []
         all_packet_ind = []
@@ -394,10 +532,10 @@ def read_hdl32e_pcap_pointcloud(
     motor_direction = np.median(np.diff(raw_data.motor_azimuth_per_block_deg[::2]))
     frame_num_per_packet = np.zeros(num_blocks)
     if motor_direction > 0:
-        frame_num_per_packet[1:] = np.cumsum(np.diff(raw_data.motor_azimuth_per_block_deg) < 0)
+        frame_num_per_packet[1:] = np.cumsum(np.diff(raw_data.motor_azimuth_per_block_deg) < -5)
         logging.debug("Motor direction is positive")
     else:
-        frame_num_per_packet[1:] = np.cumsum(np.diff(raw_data.motor_azimuth_per_block_deg) > 0)
+        frame_num_per_packet[1:] = np.cumsum(np.diff(raw_data.motor_azimuth_per_block_deg) > 5)
         logging.debug("Motor direction is negative")
     frame_num_per_point = np.tile(frame_num_per_packet, (32, 1))
 
@@ -416,7 +554,6 @@ def read_hdl32e_pcap_pointcloud(
         ],
         axis=1,
     )
-
     sensor_frame = Coordinates(
         coordinate_system=coordinate_system,
         az_el_deg_range_meters=az_el_deg_range_meters,
@@ -425,21 +562,17 @@ def read_hdl32e_pcap_pointcloud(
     # apply extrinsic rotation
     if extrinsic_4x4_to_transformed_from_sensor is None:
         # estimate roll and pitch
-        roll_deg, pitch_deg = calc_roll_pitch(
-            np.mean(raw_telemetry.mean_accel_x),
-            np.mean(raw_telemetry.mean_accel_y),
-            np.mean(raw_telemetry.mean_accel_z),
-        )
-        print(f"roll: {roll_deg:.2f} pitch: {pitch_deg:.2f}")
-        print(extrinsic_4x4_to_transformed_from_sensor)
+        mean_accel_x = np.mean(raw_telemetry.mean_accel_x)
+        mean_accel_y = np.mean(raw_telemetry.mean_accel_y)
+        mean_accel_z = np.mean(raw_telemetry.mean_accel_z)
 
-        extrinsic_4x4_to_transformed_from_sensor = create_rotation_matrix_4x4(
-            0, 0, 0, pitch_deg, -roll_deg, 90
+        extrinsic_4x4_to_transformed_from_sensor = get_hdl32e_extrinsic_4x4(
+            mean_accel_x,
+            mean_accel_y,
+            mean_accel_z,
         )
-        print(extrinsic_4x4_to_transformed_from_sensor)
-        transformed_frame = sensor_frame.transformed(extrinsic_4x4_to_transformed_from_sensor)
-    else:
-        transformed_frame = sensor_frame.transformed(extrinsic_4x4_to_transformed_from_sensor)
+
+    transformed_frame = sensor_frame.transformed(extrinsic_4x4_to_transformed_from_sensor)
 
     if include_per_packet_per_block_data:
         # create per block class
@@ -463,20 +596,21 @@ def read_hdl32e_pcap_pointcloud(
         lidar_time_seconds, raw_telemetry, per_packet
     )
     # create Hdl32ePointcloud class
+    sorted_ind = np.argsort(corrected_lidar_datetime.T.flatten())
     pc = Hdl32ePointcloud(
-        sensor_frame=sensor_frame,
-        transformed_frame=transformed_frame,
+        sensor_frame=sensor_frame[sorted_ind],
+        transformed_frame=transformed_frame[sorted_ind],
         intensity=None,
-        reflectivity=raw_data.intensity_per_point.T.flatten(),
-        return_num=return_num_per_point.T.flatten(),
-        num_returns=num_returns_per_point.T.flatten(),
-        laser_id=laser_id_per_point.T.flatten(),
-        frame_num=frame_num_per_point.T.flatten(),
-        datetime=corrected_lidar_datetime.T.flatten(),
-        lidar_type="hdl32e",
+        reflectivity=raw_data.intensity_per_point.T.flatten()[sorted_ind],
+        return_num=return_num_per_point.T.flatten()[sorted_ind],
+        num_returns=num_returns_per_point.T.flatten()[sorted_ind],
+        laser_id=laser_id_per_point.T.flatten()[sorted_ind],
+        frame_num=frame_num_per_point.T.flatten()[sorted_ind],
+        datetime=corrected_lidar_datetime.T.flatten()[sorted_ind],
+        lidar_model="hdl32e",
         name=name,
-        packet_num=(block_num_per_point // 12).T.flatten(),
-        block_num=block_num_per_point.T.flatten(),
+        packet_num=(block_num_per_point // 12).T.flatten()[sorted_ind],
+        block_num=block_num_per_point.T.flatten()[sorted_ind],
         telemetry=raw_telemetry,
         per_packet_data=per_packet,
         per_block_data=per_block,
@@ -496,12 +630,11 @@ if __name__ == "__main__":
     import time
 
     start_time = time.time()
-    PCAP_FILE = "/Users/rslocum/Downloads/SampleData_600rpm_GPS.pcap"
-    PCAP_FILE = "/Users/rslocum/Downloads/SampleData.pcap"
+    PCAP_FILE = r"/Users/rslocum/Downloads/A.pcap"
 
     PCAP_FILTERS = PcapPacketFilters(
         source_ip_addr="192.168.53.201",
-        relative_time_gate_seconds=(0.0, 1),
+        relative_time_gate_seconds=(0.0, 50),
     )
     EXTRINSIC_4X4_TO_TRANSFORMED_FROM_SENSOR = None
     # logging.basicConfig(level=logging.DEBUG)
@@ -520,8 +653,24 @@ if __name__ == "__main__":
     print(f"Duration read (seconds): {dt_seconds}")
     print(f"Percent of sensor time to read: {time_to_read/(dt_seconds) * 100:.1f}%")
 
-    # %
     import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    for frame_num in np.unique(pc.frame_num):
+        ax.plot(frame_num, np.sum(pc.frame_num == frame_num), ".")
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    for frame_num in np.unique(pc.frame_num):
+        if (frame_num > 48) & (frame_num < 60):
+            pc_plot = pc[pc.frame_num == frame_num]
+            ax.plot(
+                pc_plot.timestamp_seconds[::100],
+                pc_plot.sensor_frame.az_el_deg_range_meters[::100, 0],
+                ".",
+            )
+    ax.grid(True)
+
+    # %%
 
     pc2 = pc[pc.frame_num == 1]
     fig, axs = plt.subplots(2, 1, figsize=(10, 4))
